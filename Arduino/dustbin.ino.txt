@@ -1,0 +1,155 @@
+#include <HTTPClient.h>
+#include <WiFi.h>
+#include <ESP32Servo.h>
+
+// Wi-Fi credentials
+const char* ssid = "///////";  // Replace with your Wi-Fi network name
+const char* password = "******";  // Replace with your Wi-Fi password
+
+// Pin definitions
+const int trigPin1 = 14;  // Trig pin for ultrasonic sensor (buzzer)
+const int echoPin1 = 27;  // Echo pin for ultrasonic sensor (buzzer)
+const int buzzerPin = 15; // Buzzer pin
+const int trigPin2 = 26;  // Trig pin for ultrasonic sensor (servo lid)
+const int echoPin2 = 25;  // Echo pin for ultrasonic sensor (servo lid)
+const int servoPin = 13;  // Servo control pin
+
+// Create a Servo object
+Servo lidServo;
+
+// Variables for measuring distance
+long duration1, duration2;
+int distance1, distance2;
+
+// Thresholds for detecting objects (in cm)
+const int trashThreshold = 6;  // Distance threshold for the lid
+const int buzzerThreshold = 9; // Distance threshold for the buzzer
+
+// Server-side URL(localhost8080 or ngrok) to send data to
+const char* serverUrl = "https://your-server-URL/Esp32TrashBin/smart-trashcan";
+
+void setup() {
+  // Initialize serial communication for debugging
+  Serial.begin(115200);
+
+  // Set up ultrasonic sensor pins
+  pinMode(trigPin1, OUTPUT);
+  pinMode(echoPin1, INPUT);
+  pinMode(trigPin2, OUTPUT);
+  pinMode(echoPin2, INPUT);
+
+  // Set up the buzzer pin
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW); // Ensure the buzzer is off initially
+
+  // Attach the servo motor to the defined pin
+  lidServo.attach(servoPin);
+  lidServo.write(0); // Initial servo position (lid closed)
+
+  // Connect to Wi-Fi
+  connectToWiFi();
+}
+
+void loop() {
+  // Measure distances
+  distance1 = getDistance(trigPin1, echoPin1);
+  distance2 = getDistance(trigPin2, echoPin2);
+
+  // Calculate trash level as a percentage
+  int trashLevel = (distance1 >= 9) ? 0 : map(distance1, 0, 20, 100, 0);
+  trashLevel = constrain(trashLevel, 0, 100);
+
+  // Determine buzzer status
+  bool buzzerStatus = (trashLevel >= 90);
+  digitalWrite(buzzerPin, buzzerStatus ? HIGH : LOW);
+
+  // Disconnect servo when buzzer is on (trash level >= 90)
+  if (buzzerStatus) {
+    lidServo.detach();  // Detach the servo motor to disconnect it
+    Serial.println("Buzzer on. Servo motor disconnected.");
+  } else {
+    lidServo.attach(servoPin);  // Re-attach the servo motor when the buzzer is off
+    Serial.println("Buzzer off. Servo motor connected.");
+  }
+  
+  // Control the lid based on the second sensor
+  bool lidStatus = false;
+  if (distance2 <= trashThreshold) {
+    lidServo.write(90); // Open the lid
+    Serial.println("Lid opened.");
+    lidStatus = true;  // Lid is open
+  } else {
+    lidServo.write(0); // Close the lid
+    Serial.println("Lid closed.");
+    lidStatus = false;  // Lid is closed
+  }
+
+  // Show values in Serial Monitor
+  Serial.print("Trash Level: ");
+  Serial.println(trashLevel);
+  Serial.print("Buzzer Status: ");
+  Serial.println(buzzerStatus ? "ON" : "OFF");
+  Serial.print("Lid Status: ");
+  Serial.println(lidStatus ? "OPEN" : "CLOSED");
+
+  // Send data to the server
+  sendDataToServer(trashLevel, buzzerStatus, lidStatus);
+
+  // Wait before the next measurement
+  delay(5000);
+}
+
+// Function to measure distance using the ultrasonic sensor
+int getDistance(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH);
+  int distance = duration * 0.034 / 2;
+  return distance;
+}
+
+// Function to send data to the server as plain variables
+void sendDataToServer(int trashLevel, bool buzzerStatus, bool lidStatus) {
+  // Create a URL-encoded string with the variable values
+  String data = "trashLevel=" + String(trashLevel) + 
+                "&buzzerStatus=" + String(buzzerStatus) + 
+                "&lidStatus=" + String(lidStatus);
+
+  // Display the data in the Serial Monitor
+  Serial.println("Sending data to the server:");
+  Serial.println(data);
+
+  // Send the data to the server
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+    
+    int httpResponseCode = http.POST(data);  // Send data as POST request
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("Server Response: " + response);
+    } else {
+      Serial.println("Error in sending POST request");
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi Disconnected");
+  }
+}
+
+// Function to connect to Wi-Fi
+void connectToWiFi() {
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("Connected to WiFi");
+}
